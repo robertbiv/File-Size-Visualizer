@@ -209,8 +209,8 @@ class App(tk.Tk):
         self.tree.column("type", width=80)
         self.tree.column("size", width=120)
         self.tree.pack(fill=tk.BOTH, expand=True)
-        # Double-click row to open file/folder in Explorer
-        self.tree.bind('<Double-1>', self._on_open_selected)
+        # Double-click row: show in Explorer (select file or open folder)
+        self.tree.bind('<Double-1>', self._on_show_in_explorer_selected)
         # Build right-click context menu
         self._build_table_context_menu()
 
@@ -372,61 +372,39 @@ class App(tk.Tk):
         )
         self.ax.axis('equal')
         self.ax.set_axis_off()  # remove axes lines
-        # Build legend: Label — size and percent
+        # Build legend: Label — size and percent (truncate long names)
         total = sum(sizes)
-        legend_labels = [f"{lbl} — {human_size(sz)} ({(sz/total*100):.1f}%)" for lbl, sz in zip(labels, sizes)]
-        self.ax.legend(wedges, legend_labels, loc="center left", bbox_to_anchor=(1, 0.5))
+        def _short(name: str, max_len: int = 28) -> str:
+            return (name if len(name) <= max_len else (name[:max_len-1] + "…"))
+        legend_labels = [f"{_short(lbl)} — {human_size(sz)} ({(sz/total*100):.1f}%)" for lbl, sz in zip(labels, sizes)]
+        # Legend on the right; smaller font to avoid overflow
+        self.ax.legend(
+            wedges,
+            legend_labels,
+            loc="center left",
+            bbox_to_anchor=(1.0, 0.5),
+            frameon=False,
+            borderaxespad=0.0,
+            labelspacing=0.4,
+            prop={"size": 8},
+            handlelength=1.0,
+        )
         # Map wedges to items for hover selection
         self._wedge_map = {w: lbl for w, lbl in zip(wedges, labels)}
         self._items_by_label = {i.label: i for i in items}
-        # Simple tooltip using Tk label near mouse pointer
-        if not hasattr(self, '_tooltip'):
-            self._tooltip = tk.Label(self.canvas.get_tk_widget(), bg='lightyellow', fg='black', bd=1, relief='solid')
-
-        def on_move(event):
-            if event.inaxes != self.ax:
-                self._tooltip.place_forget()
-                return
-            found = None
-            for w in wedges:
-                if w.contains_point((event.x, event.y)):
-                    found = w
-                    break
-            for w in wedges:
-                w.set_alpha(1.0)
-            if found is not None:
-                found.set_alpha(0.6)
-                lbl = self._wedge_map.get(found)
-                it = self._items_by_label.get(lbl)
-                if it:
-                    for iid in self.tree.get_children(""):
-                        vals = self.tree.item(iid, "values")
-                        if vals and vals[0] == it.label:
-                            self.tree.selection_set(iid)
-                            self.tree.see(iid)
-                            break
-                    # Show tooltip with name and size near cursor
-                    tip = f"{it.label}\n{human_size(it.size)}"
-                    # event.x, event.y are in display coords; place tooltip relative to canvas widget
-                    widget = self.canvas.get_tk_widget()
-                    try:
-                        x = int(widget.winfo_pointerx() - widget.winfo_rootx() + 15)
-                        y = int(widget.winfo_pointery() - widget.winfo_rooty() + 15)
-                        self._tooltip.config(text=tip)
-                        self._tooltip.place(x=x, y=y)
-                    except Exception:
-                        pass
-            else:
-                self._tooltip.place_forget()
-            self.canvas.draw_idle()
-        self._mpl_cid = self.canvas.mpl_connect('motion_notify_event', on_move)
+        # Disable hover highlight: we only highlight on click
+        # (previous hover handler removed per request)
         # Click to open file/folder from wedge
         def on_click(event):
-            # On pie click: only select the corresponding row; do not open Explorer
+            # On pie click: highlight the slice and select the corresponding row
             if event.inaxes != self.ax:
                 return
             for w in wedges:
                 if w.contains_point((event.x, event.y)):
+                    # reset alphas
+                    for w2 in wedges:
+                        w2.set_alpha(1.0)
+                    w.set_alpha(0.6)
                     lbl = self._wedge_map.get(w)
                     it = self._items_by_label.get(lbl)
                     if it:
@@ -436,6 +414,7 @@ class App(tk.Tk):
                                 self.tree.selection_set(iid)
                                 self.tree.see(iid)
                                 break
+                    self.canvas.draw_idle()
                     break
         self.canvas.mpl_connect('button_press_event', on_click)
         self.canvas.draw()
@@ -470,18 +449,19 @@ class App(tk.Tk):
         return None
 
     def _ctx_open(self):
+        # Open the item itself: folders open in Explorer; files open with default app
         path = self._get_selected_path()
         if not path:
             return
         try:
-            import subprocess
             if os.path.isdir(path):
-                subprocess.Popen(['explorer', path])
+                import subprocess
+                subprocess.Popen(['explorer', os.path.normpath(path)])
             else:
-                os.startfile(path)
+                os.startfile(os.path.normpath(path))
         except Exception:
             try:
-                os.startfile(path)
+                os.startfile(os.path.normpath(path))
             except Exception:
                 pass
 
@@ -491,7 +471,7 @@ class App(tk.Tk):
             return
         try:
             import subprocess
-            subprocess.Popen(['explorer', '/select,', path])
+            subprocess.Popen(['explorer', '/select,', os.path.normpath(path)])
         except Exception:
             try:
                 os.startfile(os.path.dirname(path))
@@ -524,8 +504,8 @@ class App(tk.Tk):
             # Only re-filter cached items
             self.apply_filter_without_rescan()
 
-    def _on_open_selected(self, _event=None):
-        # Open selected item in Explorer
+    def _on_show_in_explorer_selected(self, _event=None):
+        # Double-click: show in Explorer (select file or open folder)
         sel = self.tree.selection()
         if not sel:
             return
@@ -541,12 +521,12 @@ class App(tk.Tk):
         try:
             import subprocess
             if os.path.isdir(path):
-                subprocess.Popen(['explorer', path])
+                subprocess.Popen(['explorer', os.path.normpath(path)])
             else:
-                subprocess.Popen(['explorer', '/select,', path])
+                subprocess.Popen(['explorer', '/select,', os.path.normpath(path)])
         except Exception:
             try:
-                os.startfile(path)
+                os.startfile(os.path.dirname(path))
             except Exception:
                 pass
 
