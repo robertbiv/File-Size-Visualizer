@@ -171,8 +171,11 @@ class App(tk.Tk):
         sub_cb.pack(side=tk.LEFT, padx=10)
 
         self.threshold_mode = tk.BooleanVar(value=True)
-        th_cb = ttk.Checkbutton(controls, text="Apply threshold inside folders", variable=self.threshold_mode)
+        th_cb = ttk.Checkbutton(controls, text="Apply threshold inside folders", variable=self.threshold_mode, command=self.update_apply_button)
         th_cb.pack(side=tk.LEFT, padx=10)
+
+        self.apply_btn = ttk.Button(controls, text="Apply Filter", command=self.on_apply_click)
+        self.apply_btn.pack(side=tk.LEFT, padx=10)
 
         self.status_var = tk.StringVar(value="Select a folder to begin.")
         status = ttk.Label(self, textvariable=self.status_var, anchor="w")
@@ -406,7 +409,44 @@ class App(tk.Tk):
                 self._tooltip.place_forget()
             self.canvas.draw_idle()
         self._mpl_cid = self.canvas.mpl_connect('motion_notify_event', on_move)
+        # Click to open file/folder from wedge
+        def on_click(event):
+            if event.inaxes != self.ax:
+                return
+            for w in wedges:
+                if w.contains_point((event.x, event.y)):
+                    lbl = self._wedge_map.get(w)
+                    it = self._items_by_label.get(lbl)
+                    if it:
+                        try:
+                            import subprocess
+                            if os.path.isdir(it.path):
+                                subprocess.Popen(['explorer', it.path])
+                            else:
+                                subprocess.Popen(['explorer', '/select,', it.path])
+                        except Exception:
+                            try:
+                                os.startfile(it.path)
+                            except Exception:
+                                pass
+                    break
+        self.canvas.mpl_connect('button_press_event', on_click)
         self.canvas.draw()
+
+    def update_apply_button(self):
+        # If threshold mode affects folder totals, rescan is required
+        if self.threshold_mode.get():
+            self.apply_btn.config(text="Apply & Rescan")
+        else:
+            self.apply_btn.config(text="Apply Filter")
+
+    def on_apply_click(self):
+        if self.threshold_mode.get():
+            # Threshold affects folder totals: rescan
+            self.start_scan()
+        else:
+            # Only re-filter cached items
+            self.apply_filter_without_rescan()
 
     def _on_open_selected(self, _event=None):
         # Open selected item in Explorer
