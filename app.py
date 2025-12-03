@@ -192,12 +192,20 @@ class App(tk.Tk):
         # Hide progress UI initially
         self.prog_frame.pack_forget()
 
-        main = ttk.Frame(self)
-        main.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        main.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+        self._paned = main
 
-        # Table
-        left = ttk.Frame(main)
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Table pane
+        left = ttk.Frame(main, width=360)
+        try:
+            left.pack_propagate(False)
+        except Exception:
+            pass
+        try:
+            main.add(left, weight=1, minsize=300)
+        except Exception:
+            left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         columns = ("name", "type", "size")
         self.tree = ttk.Treeview(left, columns=columns, show="headings")
         # Enable column sort on click
@@ -206,28 +214,58 @@ class App(tk.Tk):
         self.tree.heading("name", text=self._col_titles["name"], command=lambda c="name": self.sort_tree(c))
         self.tree.heading("type", text=self._col_titles["type"], command=lambda c="type": self.sort_tree(c))
         self.tree.heading("size", text=self._col_titles["size"], command=lambda c="size": self.sort_tree(c))
-        self.tree.column("name", width=250)
-        self.tree.column("type", width=80)
-        self.tree.column("size", width=120)
+        self.tree.column("name", width=220, stretch=False)
+        self.tree.column("type", width=70, stretch=False, anchor="center")
+        self.tree.column("size", width=90, stretch=False, anchor="e")
         self.tree.pack(fill=tk.BOTH, expand=True)
         # Double-click row: show in Explorer (select file or open folder)
         self.tree.bind('<Double-1>', self._on_show_in_explorer_selected)
         # Build right-click context menu
         self._build_table_context_menu()
 
-        # Chart
+        # Chart pane
         right = ttk.Frame(main)
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        try:
+            main.add(right, weight=4, minsize=200)
+            try:
+                main.paneconfig(left, weight=1, minsize=300)
+                main.paneconfig(right, weight=4, minsize=200)
+            except Exception:
+                pass
+            right.rowconfigure(0, weight=1)
+            right.columnconfigure(0, weight=1)
+        except Exception:
+            right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        try:
+            right.configure(padding=0)
+        except Exception:
+            pass
+        # Ensure the canvas grows fully with the right panel
+        try:
+            right.pack_propagate(False)
+        except Exception:
+            pass
         # Use manual layout adjustments for better control; remove frame
-        self.figure = Figure(figsize=(7, 5.5), dpi=100, constrained_layout=False, frameon=False)
-        self.ax = self.figure.add_subplot(111, frame_on=False)
+        self.figure = Figure(figsize=(7, 5.5), dpi=100, constrained_layout=False, frameon=False, facecolor='none')
+        self.ax = self.figure.add_subplot(111, frame_on=False, facecolor='none')
         # Title removed per request; maximize chart area
         self.canvas = FigureCanvasTkAgg(self.figure, master=right)
         self.ax.set_axis_off()
-        self.ax.patch.set_visible(False)
-        self.figure.patch.set_visible(False)
+        # Ensure transparent backgrounds to avoid white overlay/clipping
+        try:
+            self.ax.patch.set_visible(False)
+            self.ax.set_facecolor('none')
+            self.figure.patch.set_visible(False)
+            self.figure.set_facecolor('none')
+            # Set the Tk canvas background to match the window
+            self.canvas.get_tk_widget().configure(highlightthickness=0, bd=0)
+        except Exception:
+            pass
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        try:
+            self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+        except Exception:
+            self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
         # Redraw pie on canvas resize to maximize usage of available space
         def _on_resize(_event):
             # Debounce redraws to improve resize performance
@@ -239,6 +277,20 @@ class App(tk.Tk):
                     pass
                 self._resize_after_id = self.after(120, lambda: self._draw_pie(self._last_items))
         self.canvas.get_tk_widget().bind('<Configure>', _on_resize)
+        # Sync canvas widget size to right panel so the white box grows with window
+        def _on_right_resize(ev):
+            pass  # Let paned window handle sizing automatically
+        right.bind('<Configure>', _on_right_resize)
+
+        # Initialize sash position once widgets are laid out
+        def _init_sash():
+            try:
+                if self._paned.winfo_ismapped():
+                    width = max(280, min(420, int(self.winfo_width() * 0.32)))
+                    self._paned.sashpos(0, width)
+            except Exception:
+                pass
+        self.after(150, _init_sash)
 
     def browse_folder(self):
         folder = filedialog.askdirectory()
@@ -363,15 +415,20 @@ class App(tk.Tk):
                 _w, _h = 800, 600
         except Exception:
             _w, _h = 800, 600
+        
         # Resize the figure to match the widget so the pie scales with window
         try:
             dpi = float(self.figure.get_dpi())
-            self.figure.set_size_inches(max(1, _w) / dpi, max(1, _h) / dpi, forward=True)
+            fig_w = max(1, _w) / dpi
+            fig_h = max(1, _h) / dpi
+            self.figure.set_size_inches(fig_w, fig_h, forward=True)
         except Exception:
             pass
-        # No padding: fill entire figure
+        
+        # Position axes to fill the figure and center the content
         try:
-            self.ax.set_position([0, 0, 1, 1])
+            self.ax.set_position([0.0, 0.0, 1.0, 1.0])
+            self.figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
         except Exception:
             pass
         if not items:
@@ -398,8 +455,10 @@ class App(tk.Tk):
             colors = cm.tab20((hashes % 20) / 20.0)
         except Exception:
             colors = None
-        # Use full radius
+        # Compute adaptive margin/radius based on widget aspect to avoid clipping
+        # Use near-full radius and center the pie; auto-stretch to fill height
         r = 1.0
+        center_y = 0.0
         
         wedges, texts = self.ax.pie(
             sizes,
@@ -409,14 +468,23 @@ class App(tk.Tk):
             colors=colors,
             wedgeprops={"linewidth": 0.5, "edgecolor": "white"},
             radius=r,
-            center=(0, 0),
+            center=(0, center_y),
         )
+        # Debug prints removed
+        # Prevent any clipping so the pie renders fully
+        try:
+            for w in wedges:
+                w.set_clip_on(False)
+        except Exception:
+            pass
         
-        # Set aspect to equal and use tight limits
-        self.ax.set_aspect('equal')
-        self.ax.set_xlim(-1.05, 1.05)
-        self.ax.set_ylim(-1.05, 1.05)
-        self.ax.set_axis_off()  # remove axes lines
+        # Maintain a true circle by expanding limits (datalim) to fill the rectangle
+        # 'equal' sets aspect to equal and adjustable to 'datalim' automatically
+        self.ax.axis('equal')
+        self.ax.set_axis_off()
+        # Force the axes to use the full figure area
+        self.ax.set_position([0, 0, 1, 1])
+        self.figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
         
         # Title intentionally removed
         # Precompute total for tooltip percentages
@@ -445,6 +513,29 @@ class App(tk.Tk):
                 if w.contains_point((event.x, event.y)):
                     found = w
                     break
+            # If not found via pixel hit-test, try angle-based fallback for tiny wedges
+            if found is None and event.xdata is not None and event.ydata is not None:
+                try:
+                    ang = math.degrees(math.atan2(event.ydata, event.xdata))
+                    if ang < 0:
+                        ang += 360.0
+                    # Determine slice percentage map
+                    pct_map = {}
+                    for idx, w in enumerate(wedges):
+                        span = abs(getattr(w, 'theta2', 0) - getattr(w, 'theta1', 0))
+                        pct_map[w] = (span / 360.0) * 100.0
+                    # Threshold to ignore very tiny slices unless the angle is within them
+                    MIN_PCT = 0.5
+                    for w in wedges:
+                        t1 = getattr(w, 'theta1', 0)
+                        t2 = getattr(w, 'theta2', 0)
+                        # Normalize order
+                        lo, hi = (t1, t2) if t1 <= t2 else (t2, t1)
+                        if lo <= ang <= hi and pct_map.get(w, 0) >= MIN_PCT:
+                            found = w
+                            break
+                except Exception:
+                    pass
             # reset alphas
             for w2 in wedges:
                 w2.set_alpha(1.0)
@@ -473,6 +564,12 @@ class App(tk.Tk):
             else:
                 self._tooltip.place_forget()
             self.canvas.draw_idle()
+        # Disconnect prior hover handler to avoid duplicates
+        try:
+            if hasattr(self, '_mpl_cid_hover') and self._mpl_cid_hover:
+                self.canvas.mpl_disconnect(self._mpl_cid_hover)
+        except Exception:
+            pass
         self._mpl_cid_hover = self.canvas.mpl_connect('motion_notify_event', on_move)
         # Legend removed
         # Click to open file/folder from wedge
@@ -497,7 +594,18 @@ class App(tk.Tk):
                                 break
                     self.canvas.draw_idle()
                     break
-        self.canvas.mpl_connect('button_press_event', on_click)
+        # Disconnect prior click handler to avoid duplicates
+        try:
+            if hasattr(self, '_mpl_cid_click') and self._mpl_cid_click:
+                self.canvas.mpl_disconnect(self._mpl_cid_click)
+        except Exception:
+            pass
+        self._mpl_cid_click = self.canvas.mpl_connect('button_press_event', on_click)
+        # Ensure the canvas is the topmost widget in the right panel
+        try:
+            self.canvas.get_tk_widget().tkraise()
+        except Exception:
+            pass
         # Legend removed
         self.canvas.draw()
 
