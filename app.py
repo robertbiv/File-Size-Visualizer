@@ -211,6 +211,8 @@ class App(tk.Tk):
         self.tree.pack(fill=tk.BOTH, expand=True)
         # Double-click row to open file/folder in Explorer
         self.tree.bind('<Double-1>', self._on_open_selected)
+        # Build right-click context menu
+        self._build_table_context_menu()
 
         # Chart
         right = ttk.Frame(main)
@@ -352,11 +354,20 @@ class App(tk.Tk):
             other = sum(s for _, s in tail)
             labels = [l for l, _ in head] + ["Other"]
             sizes = [s for _, s in head] + [other]
+        # Deterministic colors based on label hash
+        try:
+            import matplotlib.cm as cm
+            import numpy as np
+            hashes = np.array([abs(hash(lbl)) % 256 for lbl in labels], dtype=float)
+            colors = cm.tab20((hashes % 20) / 20.0)
+        except Exception:
+            colors = None
         wedges, texts = self.ax.pie(
             sizes,
             labels=None,
             autopct=None,
             startangle=90,
+            colors=colors,
             wedgeprops={"linewidth": 0.5, "edgecolor": "white"},
         )
         self.ax.axis('equal')
@@ -411,6 +422,7 @@ class App(tk.Tk):
         self._mpl_cid = self.canvas.mpl_connect('motion_notify_event', on_move)
         # Click to open file/folder from wedge
         def on_click(event):
+            # On pie click: only select the corresponding row; do not open Explorer
             if event.inaxes != self.ax:
                 return
             for w in wedges:
@@ -418,20 +430,84 @@ class App(tk.Tk):
                     lbl = self._wedge_map.get(w)
                     it = self._items_by_label.get(lbl)
                     if it:
-                        try:
-                            import subprocess
-                            if os.path.isdir(it.path):
-                                subprocess.Popen(['explorer', it.path])
-                            else:
-                                subprocess.Popen(['explorer', '/select,', it.path])
-                        except Exception:
-                            try:
-                                os.startfile(it.path)
-                            except Exception:
-                                pass
+                        for iid in self.tree.get_children(""):
+                            vals = self.tree.item(iid, "values")
+                            if vals and vals[0] == it.label:
+                                self.tree.selection_set(iid)
+                                self.tree.see(iid)
+                                break
                     break
         self.canvas.mpl_connect('button_press_event', on_click)
         self.canvas.draw()
+
+    def _build_table_context_menu(self):
+        # Right-click menu for table items
+        self._context_menu = tk.Menu(self, tearoff=0)
+        self._context_menu.add_command(label="Open", command=self._ctx_open)
+        self._context_menu.add_command(label="Show in Explorer", command=self._ctx_show_in_explorer)
+        self._context_menu.add_command(label="Copy Path", command=self._ctx_copy_path)
+
+        def _on_right_click(event):
+            iid = self.tree.identify_row(event.y)
+            if iid:
+                self.tree.selection_set(iid)
+                try:
+                    self._context_menu.tk_popup(event.x_root, event.y_root)
+                finally:
+                    self._context_menu.grab_release()
+        self.tree.bind('<Button-3>', _on_right_click)
+
+    def _get_selected_path(self) -> Optional[str]:
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        vals = self.tree.item(sel[0], 'values')
+        if not vals:
+            return None
+        label = vals[0]
+        if hasattr(self, '_label_to_path'):
+            return self._label_to_path.get(label)
+        return None
+
+    def _ctx_open(self):
+        path = self._get_selected_path()
+        if not path:
+            return
+        try:
+            import subprocess
+            if os.path.isdir(path):
+                subprocess.Popen(['explorer', path])
+            else:
+                os.startfile(path)
+        except Exception:
+            try:
+                os.startfile(path)
+            except Exception:
+                pass
+
+    def _ctx_show_in_explorer(self):
+        path = self._get_selected_path()
+        if not path:
+            return
+        try:
+            import subprocess
+            subprocess.Popen(['explorer', '/select,', path])
+        except Exception:
+            try:
+                os.startfile(os.path.dirname(path))
+            except Exception:
+                pass
+
+    def _ctx_copy_path(self):
+        path = self._get_selected_path()
+        if not path:
+            return
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(path)
+            self.status_var.set("Path copied to clipboard.")
+        except Exception:
+            pass
 
     def update_apply_button(self):
         # If threshold mode affects folder totals, rescan is required
