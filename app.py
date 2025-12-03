@@ -135,6 +135,7 @@ class App(tk.Tk):
         self.scan_queue: queue.Queue = queue.Queue()
         self._cancel_flag = False
         self._last_items: List[ItemSize] = []
+        self._resize_after_id = None
 
         self._build_ui()
 
@@ -220,7 +221,7 @@ class App(tk.Tk):
         # Use manual layout adjustments for better control; remove frame
         self.figure = Figure(figsize=(7, 5.5), dpi=100, constrained_layout=False, frameon=False)
         self.ax = self.figure.add_subplot(111, frame_on=False)
-        # Title will be set dynamically in _draw_pie to stay centered
+        # Title removed per request; maximize chart area
         self.canvas = FigureCanvasTkAgg(self.figure, master=right)
         self.ax.set_axis_off()
         self.ax.patch.set_visible(False)
@@ -229,8 +230,14 @@ class App(tk.Tk):
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         # Redraw pie on canvas resize to maximize usage of available space
         def _on_resize(_event):
+            # Debounce redraws to improve resize performance
             if hasattr(self, '_last_items') and self._last_items:
-                self._draw_pie(self._last_items)
+                try:
+                    if self._resize_after_id:
+                        self.after_cancel(self._resize_after_id)
+                except Exception:
+                    pass
+                self._resize_after_id = self.after(120, lambda: self._draw_pie(self._last_items))
         self.canvas.get_tk_widget().bind('<Configure>', _on_resize)
 
     def browse_folder(self):
@@ -266,7 +273,6 @@ class App(tk.Tk):
         self.status_var.set("Scanning… This may take a while for large folders.")
         self.tree.delete(*self.tree.get_children())
         self.ax.clear()
-        self.ax.set_title("Size distribution")
         self.canvas.draw()
         self._cancel_flag = False
         self.cancel_btn.config(state=tk.NORMAL)
@@ -412,8 +418,7 @@ class App(tk.Tk):
         self.ax.set_ylim(-1.05, 1.05)
         self.ax.set_axis_off()  # remove axes lines
         
-        # Set title centered at the top
-        self.ax.set_title("Size distribution", fontsize=12, pad=10)
+        # Title intentionally removed
         # Precompute total for tooltip percentages
         total = float(sum(sizes)) if sizes else 1.0
         # No padding: zero margins
