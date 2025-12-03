@@ -217,14 +217,25 @@ class App(tk.Tk):
         # Chart
         right = ttk.Frame(main)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        # Larger figure for bigger pie
-        self.figure = Figure(figsize=(7, 5.5), dpi=100)
+        # Larger figure for bigger pie; allow layout constraints
+        # Use manual layout adjustments for better control
+        self.figure = Figure(figsize=(7, 5.5), dpi=100, constrained_layout=False)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_title("Size distribution")
         self.canvas = FigureCanvasTkAgg(self.figure, master=right)
         self.ax.set_axis_off()
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        # Redraw pie on canvas resize to maximize usage of available space
+        def _on_resize(_event):
+            if hasattr(self, '_last_items') and self._last_items:
+                try:
+                    # Give some bottom margin for legend underneath the pie
+                    self.figure.subplots_adjust(bottom=0.22)
+                except Exception:
+                    pass
+                self._draw_pie(self._last_items)
+        self.canvas.get_tk_widget().bind('<Configure>', _on_resize)
 
     def browse_folder(self):
         folder = filedialog.askdirectory()
@@ -339,6 +350,25 @@ class App(tk.Tk):
 
     def _draw_pie(self, items: List[ItemSize]):
         self.ax.clear()
+        # Measure current canvas size for responsive layout
+        try:
+            _w = max(1, self.canvas.get_tk_widget().winfo_width())
+            _h = max(1, self.canvas.get_tk_widget().winfo_height())
+        except Exception:
+            _w, _h = 800, 600
+        # Explicit axes rectangle to ensure the pie stays on-page and centered
+        # [left, bottom, width, height] in figure coordinates
+        # Keep pie centered in upper portion, reserve bottom for legend
+        try:
+            # Symmetric left/right margins, adapt for smaller widths
+            narrow = _w < 650
+            left = 0.06 if not narrow else 0.08
+            width = 0.88 if not narrow else 0.84
+            bottom = 0.24 if not narrow else 0.22
+            height = 0.70 if not narrow else 0.68
+            self.ax.set_position([left, bottom, width, height])
+        except Exception:
+            pass
         if not items:
             self.ax.text(0.5, 0.5, "No items", ha="center", va="center")
             self.canvas.draw()
@@ -363,6 +393,8 @@ class App(tk.Tk):
             colors = cm.tab20((hashes % 20) / 20.0)
         except Exception:
             colors = None
+        # Reduce radius slightly so pie stays within view even with legend
+        r = 0.95 if _w > 900 else (0.92 if _w > 700 else 0.88)
         wedges, texts = self.ax.pie(
             sizes,
             labels=None,
@@ -370,32 +402,35 @@ class App(tk.Tk):
             startangle=90,
             colors=colors,
             wedgeprops={"linewidth": 0.5, "edgecolor": "white"},
+            radius=r,
+            center=(0, 0),
         )
-        self.ax.axis('equal')
+        # If legend hidden, slightly offset the pie upward to use reclaimed space
+        if hasattr(self, 'hide_legend') and self.hide_legend.get():
+            try:
+                pos = self.ax.get_position().bounds  # (left, bottom, width, height)
+                # Move axes a bit lower bottom to center visually with more pie
+                self.ax.set_position([pos[0], pos[1]+0.02, pos[2], pos[3]])
+            except Exception:
+                pass
+        self.ax.set_aspect('equal')
+        # Keep pie centered and always visible even in narrow mode
+        lim = 1.1 if _w >= 700 else 1.0
+        self.ax.set_xlim(-lim, lim)
+        self.ax.set_ylim(-lim, lim)
         self.ax.set_axis_off()  # remove axes lines
-        # Build legend: Label — size and percent (truncate long names)
-        total = sum(sizes)
-        def _short(name: str, max_len: int = 28) -> str:
-            return (name if len(name) <= max_len else (name[:max_len-1] + "…"))
-        legend_labels = [f"{_short(lbl)} — {human_size(sz)} ({(sz/total*100):.1f}%)" for lbl, sz in zip(labels, sizes)]
-        # Legend below the pie for better readability; dynamic columns
-        ncols = 2 if len(legend_labels) <= 10 else 3
-        self.ax.legend(
-            wedges,
-            legend_labels,
-            loc="lower center",
-            bbox_to_anchor=(0.5, -0.15),
-            frameon=False,
-            borderaxespad=0.0,
-            labelspacing=0.4,
-            prop={"size": 9},
-            ncol=ncols,
-            handlelength=1.0,
-        )
-        self.figure.tight_layout()
+        # No legend: expand figure area margins
+        try:
+            self.figure.subplots_adjust(left=0.02, right=0.98, top=0.98, bottom=0.02)
+        except Exception:
+            pass
+        # Avoid tight_layout to prevent moving axes out of intended bounds
         # Map wedges to items for hover selection
         self._wedge_map = {w: lbl for w, lbl in zip(wedges, labels)}
         self._items_by_label = {i.label: i for i in items}
+        # Inverse map for label -> wedge to support table hover highlighting
+        self._label_to_wedge = {lbl: w for w, lbl in zip(wedges, labels)}
+        # Legend removed
         # Hover: highlight slice and show name, but do not select the table row
         if not hasattr(self, '_tooltip'):
             self._tooltip = tk.Label(self.canvas.get_tk_widget(), bg='lightyellow', fg='black', bd=1, relief='solid')
@@ -428,6 +463,7 @@ class App(tk.Tk):
                 self._tooltip.place_forget()
             self.canvas.draw_idle()
         self._mpl_cid_hover = self.canvas.mpl_connect('motion_notify_event', on_move)
+        # Legend removed
         # Click to open file/folder from wedge
         def on_click(event):
             # On pie click: highlight the slice and select the corresponding row
@@ -451,7 +487,31 @@ class App(tk.Tk):
                     self.canvas.draw_idle()
                     break
         self.canvas.mpl_connect('button_press_event', on_click)
+        # Legend removed
         self.canvas.draw()
+
+        # Bind table hover to highlight corresponding pie wedge
+        def _on_tree_motion(event):
+            iid = self.tree.identify_row(event.y)
+            # Reset all wedge alphas
+            for w2 in self._label_to_wedge.values():
+                w2.set_alpha(1.0)
+            if iid:
+                vals = self.tree.item(iid, 'values')
+                if vals:
+                    lbl = vals[0]
+                    w = self._label_to_wedge.get(lbl)
+                    if w:
+                        w.set_alpha(0.6)
+                        self.canvas.draw_idle()
+                        return
+            self.canvas.draw_idle()
+        # Ensure only one binding exists (rebind safely)
+        try:
+            self.tree.unbind('<Motion>')
+        except Exception:
+            pass
+        self.tree.bind('<Motion>', _on_tree_motion)
 
     def _build_table_context_menu(self):
         # Right-click menu for table items
@@ -595,6 +655,11 @@ class App(tk.Tk):
 
     def _on_sort(self, col: str):
         App.sort_tree(self, col)
+
+    def redraw_legend(self):
+        # Redraw pie with updated legend when compact mode toggled
+        if hasattr(self, '_last_items') and self._last_items:
+            self._draw_pie(self._last_items)
 
     def export_csv(self):
         if not self._last_items:
