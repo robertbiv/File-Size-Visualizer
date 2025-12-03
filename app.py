@@ -198,15 +198,16 @@ class App(tk.Tk):
         self.tree = ttk.Treeview(left, columns=columns, show="headings")
         # Enable column sort on click
         self._sort_dirs = {"name": True, "type": True, "size": False}
-        def _mk_sort(col):
-            return functools.partial(self._on_sort, col)
-        self.tree.heading("name", text="Name", command=_mk_sort("name"))
-        self.tree.heading("type", text="Type", command=_mk_sort("type"))
-        self.tree.heading("size", text="Size", command=_mk_sort("size"))
+        self._col_titles = {"name": "Name", "type": "Type", "size": "Size"}
+        self.tree.heading("name", text=self._col_titles["name"], command=lambda c="name": self.sort_tree(c))
+        self.tree.heading("type", text=self._col_titles["type"], command=lambda c="type": self.sort_tree(c))
+        self.tree.heading("size", text=self._col_titles["size"], command=lambda c="size": self.sort_tree(c))
         self.tree.column("name", width=250)
         self.tree.column("type", width=80)
         self.tree.column("size", width=120)
         self.tree.pack(fill=tk.BOTH, expand=True)
+        # Double-click row to open file/folder in Explorer
+        self.tree.bind('<Double-1>', self._on_open_selected)
 
         # Chart
         right = ttk.Frame(main)
@@ -215,6 +216,7 @@ class App(tk.Tk):
         self.ax = self.figure.add_subplot(111)
         self.ax.set_title("Size distribution")
         self.canvas = FigureCanvasTkAgg(self.figure, master=right)
+        self.ax.set_axis_off()
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
@@ -325,6 +327,8 @@ class App(tk.Tk):
         for it in items:
             iid = self.tree.insert("", tk.END, values=(it.label, "Folder" if it.is_dir else "File", human_size(it.size)))
             self._tree_items_ids.append(iid)
+        # Map labels to paths for open action
+        self._label_to_path = {it.label: it.path for it in items}
         self._draw_pie(items)
 
     def _draw_pie(self, items: List[ItemSize]):
@@ -358,7 +362,77 @@ class App(tk.Tk):
         total = sum(sizes)
         legend_labels = [f"{lbl} — {human_size(sz)} ({(sz/total*100):.1f}%)" for lbl, sz in zip(labels, sizes)]
         self.ax.legend(wedges, legend_labels, loc="center left", bbox_to_anchor=(1, 0.5))
+        # Map wedges to items for hover selection
+        self._wedge_map = {w: lbl for w, lbl in zip(wedges, labels)}
+        self._items_by_label = {i.label: i for i in items}
+        # Simple tooltip using Tk label near mouse pointer
+        if not hasattr(self, '_tooltip'):
+            self._tooltip = tk.Label(self.canvas.get_tk_widget(), bg='lightyellow', fg='black', bd=1, relief='solid')
+
+        def on_move(event):
+            if event.inaxes != self.ax:
+                self._tooltip.place_forget()
+                return
+            found = None
+            for w in wedges:
+                if w.contains_point((event.x, event.y)):
+                    found = w
+                    break
+            for w in wedges:
+                w.set_alpha(1.0)
+            if found is not None:
+                found.set_alpha(0.6)
+                lbl = self._wedge_map.get(found)
+                it = self._items_by_label.get(lbl)
+                if it:
+                    for iid in self.tree.get_children(""):
+                        vals = self.tree.item(iid, "values")
+                        if vals and vals[0] == it.label:
+                            self.tree.selection_set(iid)
+                            self.tree.see(iid)
+                            break
+                    # Show tooltip with name and size near cursor
+                    tip = f"{it.label}\n{human_size(it.size)}"
+                    # event.x, event.y are in display coords; place tooltip relative to canvas widget
+                    widget = self.canvas.get_tk_widget()
+                    try:
+                        x = int(widget.winfo_pointerx() - widget.winfo_rootx() + 15)
+                        y = int(widget.winfo_pointery() - widget.winfo_rooty() + 15)
+                        self._tooltip.config(text=tip)
+                        self._tooltip.place(x=x, y=y)
+                    except Exception:
+                        pass
+            else:
+                self._tooltip.place_forget()
+            self.canvas.draw_idle()
+        self._mpl_cid = self.canvas.mpl_connect('motion_notify_event', on_move)
         self.canvas.draw()
+
+    def _on_open_selected(self, _event=None):
+        # Open selected item in Explorer
+        sel = self.tree.selection()
+        if not sel:
+            return
+        vals = self.tree.item(sel[0], 'values')
+        if not vals:
+            return
+        label = vals[0]
+        path = None
+        if hasattr(self, '_label_to_path'):
+            path = self._label_to_path.get(label)
+        if not path:
+            return
+        try:
+            import subprocess
+            if os.path.isdir(path):
+                subprocess.Popen(['explorer', path])
+            else:
+                subprocess.Popen(['explorer', '/select,', path])
+        except Exception:
+            try:
+                os.startfile(path)
+            except Exception:
+                pass
 
     def sort_tree(self, col: str):
             # Toggle sort direction
@@ -379,6 +453,14 @@ class App(tk.Tk):
             data.sort(reverse=not asc)
             for idx, (_, k) in enumerate(data):
                 self.tree.move(k, "", idx)
+            # Update arrow on sorted column heading
+            arrow = "▲" if asc else "▼"
+            for c in ("name", "type", "size"):
+                title = self._col_titles[c]
+                if c == col:
+                    self.tree.heading(c, text=f"{title} {arrow}")
+                else:
+                    self.tree.heading(c, text=title)
             self._sort_dirs[col] = not asc
 
     def _on_sort(self, col: str):
@@ -401,6 +483,15 @@ class App(tk.Tk):
                 for it in self._last_items:
                     writer.writerow([it.label, it.path, "Folder" if it.is_dir else "File", it.size, human_size(it.size)])
             messagebox.showinfo("Export", f"Saved: {fp}")
+            try:
+                # Open Explorer to the saved file location and select it
+                import subprocess
+                subprocess.Popen(["explorer", "/select,", fp])
+            except Exception:
+                try:
+                    os.startfile(os.path.dirname(fp))
+                except Exception:
+                    pass
         except Exception as e:
             messagebox.showerror("Export error", str(e))
 
