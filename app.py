@@ -4,10 +4,11 @@ import queue
 import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Callable
+import ctypes
+import functools
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import functools
 
 # matplotlib backend for Tk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -101,32 +102,35 @@ def list_top_level_items(folder: str,
     return items
 
 
-def list_subfolder_items(folder: str) -> List[ItemSize]:
-    # Return items for every immediate child across all subfolders (first level under folder)
-    items: List[ItemSize] = []
-    for root, dirs, files in os.walk(folder, topdown=True, followlinks=False):
-        # Only take immediate children of current root (for each subfolder level, we collect their children sizes)
-        # To keep UI meaningful, we aggregate by each direct child under selected folder; deeper subfolders represented by their total size.
-        if os.path.abspath(root) == os.path.abspath(folder):
-            # At top level, same as list_top_level_items
-            with os.scandir(root) as it:
-                for entry in it:
-                    if entry.is_symlink():
-                        continue
-                    if entry.is_dir(follow_symlinks=False):
-                        size = compute_dir_size(entry.path)
-                        items.append(ItemSize(label=entry.name, path=entry.path, size=size, is_dir=True))
-                    elif entry.is_file(follow_symlinks=False):
-                        s = safe_stat(entry.path)
-                        size = s.st_size if s else 0
-                        items.append(ItemSize(label=entry.name, path=entry.path, size=size, is_dir=False))
-            break
-    return items
-
-
 class App(tk.Tk):
     def __init__(self):
+        # Enable per-monitor DPI awareness on Windows to avoid blurriness
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+        
+        # Get system DPI before creating Tk window
+        try:
+            hdc = ctypes.windll.user32.GetDC(0)
+            dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
+            ctypes.windll.user32.ReleaseDC(0, hdc)
+            self._system_dpi = max(96, min(240, dpi))
+        except Exception:
+            self._system_dpi = 100
+        
         super().__init__()
+        
+        # Align Tk scaling with actual monitor DPI for crisp rendering
+        try:
+            tk_scaling = self._system_dpi / 72.0
+            self.tk.call('tk', 'scaling', tk_scaling)
+        except Exception:
+            pass
+            
         self.title("File Size Filter - Pie Chart")
         self.geometry("900x600")
 
@@ -135,8 +139,7 @@ class App(tk.Tk):
         self.scan_queue: queue.Queue = queue.Queue()
         self._cancel_flag = False
         self._last_items: List[ItemSize] = []
-        self._resize_after_id = None
-
+        
         self._build_ui()
 
     def _build_ui(self):
@@ -189,7 +192,6 @@ class App(tk.Tk):
         self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.cancel_btn = ttk.Button(self.prog_frame, text="Cancel", command=self.cancel_scan, state=tk.DISABLED)
         self.cancel_btn.pack(side=tk.LEFT, padx=6)
-        # Hide progress UI initially
         self.prog_frame.pack_forget()
 
         main = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
@@ -202,13 +204,11 @@ class App(tk.Tk):
             left.pack_propagate(False)
         except Exception:
             pass
-        try:
-            main.add(left, weight=1, minsize=300)
-        except Exception:
-            left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        main.add(left, weight=1)
+        
         columns = ("name", "type", "size")
         self.tree = ttk.Treeview(left, columns=columns, show="headings")
-        # Enable column sort on click
+        
         self._sort_dirs = {"name": True, "type": True, "size": False}
         self._col_titles = {"name": "Name", "type": "Type", "size": "Size"}
         self.tree.heading("name", text=self._col_titles["name"], command=lambda c="name": self.sort_tree(c))
@@ -218,76 +218,42 @@ class App(tk.Tk):
         self.tree.column("type", width=70, stretch=False, anchor="center")
         self.tree.column("size", width=90, stretch=False, anchor="e")
         self.tree.pack(fill=tk.BOTH, expand=True)
-        # Double-click row: show in Explorer (select file or open folder)
         self.tree.bind('<Double-1>', self._on_show_in_explorer_selected)
-        # Build right-click context menu
         self._build_table_context_menu()
 
         # Chart pane
         right = ttk.Frame(main)
-        try:
-            main.add(right, weight=4, minsize=200)
-            try:
-                main.paneconfig(left, weight=1, minsize=300)
-                main.paneconfig(right, weight=4, minsize=200)
-            except Exception:
-                pass
-            right.rowconfigure(0, weight=1)
-            right.columnconfigure(0, weight=1)
-        except Exception:
-            right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        try:
-            right.configure(padding=0)
-        except Exception:
-            pass
-        # Ensure the canvas grows fully with the right panel
-        try:
-            right.pack_propagate(False)
-        except Exception:
-            pass
-        # Use manual layout adjustments for better control; remove frame
-        self.figure = Figure(figsize=(7, 5.5), dpi=100, constrained_layout=False, frameon=False, facecolor='none')
+        main.add(right, weight=3)
+        
+        # Configure right panel to allow canvas to fill it
+        right.rowconfigure(0, weight=1)
+        right.columnconfigure(0, weight=1)
+
+        # Set figure DPI
+        self.figure = Figure(figsize=(5, 4), dpi=self._system_dpi, constrained_layout=False, frameon=False, facecolor='none')
         self.ax = self.figure.add_subplot(111, frame_on=False, facecolor='none')
-        # Title removed per request; maximize chart area
+        
         self.canvas = FigureCanvasTkAgg(self.figure, master=right)
         self.ax.set_axis_off()
-        # Ensure transparent backgrounds to avoid white overlay/clipping
+        
+        # Transparent background setup
         try:
             self.ax.patch.set_visible(False)
             self.ax.set_facecolor('none')
             self.figure.patch.set_visible(False)
             self.figure.set_facecolor('none')
-            # Set the Tk canvas background to match the window
             self.canvas.get_tk_widget().configure(highlightthickness=0, bd=0)
         except Exception:
             pass
+            
         self.canvas.draw()
-        try:
-            self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
-        except Exception:
-            self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
-        # Redraw pie on canvas resize to maximize usage of available space
-        def _on_resize(_event):
-            # Debounce redraws to improve resize performance
-            if hasattr(self, '_last_items') and self._last_items:
-                try:
-                    if self._resize_after_id:
-                        self.after_cancel(self._resize_after_id)
-                except Exception:
-                    pass
-                self._resize_after_id = self.after(120, lambda: self._draw_pie(self._last_items))
-        self.canvas.get_tk_widget().bind('<Configure>', _on_resize)
-        # Sync canvas widget size to right panel so the white box grows with window
-        def _on_right_resize(ev):
-            pass  # Let paned window handle sizing automatically
-        right.bind('<Configure>', _on_right_resize)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # Initialize sash position once widgets are laid out
+        # Initial sash pos
         def _init_sash():
             try:
                 if self._paned.winfo_ismapped():
-                    width = max(280, min(420, int(self.winfo_width() * 0.32)))
-                    self._paned.sashpos(0, width)
+                    self._paned.sashpos(0, 360)
             except Exception:
                 pass
         self.after(150, _init_sash)
@@ -328,7 +294,6 @@ class App(tk.Tk):
         self.canvas.draw()
         self._cancel_flag = False
         self.cancel_btn.config(state=tk.NORMAL)
-        # Show progress UI only during scan
         self.prog_frame.pack(fill=tk.X, padx=10)
         self.progress.start(10)
         self.scan_thread = threading.Thread(target=self._scan_worker, args=(folder, self.parse_min_size(), self.apply_filter_subfolders.get(), self.threshold_mode.get()), daemon=True)
@@ -356,8 +321,6 @@ class App(tk.Tk):
 
             items = list_top_level_items(folder, file_filter=file_filter, progress_cb=_progress_cb, cancel_cb=_cancel_cb)
             items = [it for it in items if it.size >= min_size]
-            # If include_subfolders is false, we still show folder totals; true means the filter is applied to files when computing sizes (already totals). For simplicity, we treat totals; deeper filtering per-file would complicate meaning of slices.
-            # Sort by size desc
             items.sort(key=lambda x: x.size, reverse=True)
             self.scan_queue.put(("done", items))
         except Exception as e:
@@ -389,55 +352,33 @@ class App(tk.Tk):
         if not (self.scan_thread and self.scan_thread.is_alive()):
             self.progress.stop()
             self.cancel_btn.config(state=tk.DISABLED)
-            # Hide progress UI after scan ends/cancelled
             self.prog_frame.pack_forget()
 
     def _populate(self, items: List[ItemSize]):
         self.tree.delete(*self.tree.get_children())
-        self._tree_items_ids = []
         for it in items:
-            iid = self.tree.insert("", tk.END, values=(it.label, "Folder" if it.is_dir else "File", human_size(it.size)))
-            self._tree_items_ids.append(iid)
-        # Map labels to paths for open action
+            self.tree.insert("", tk.END, values=(it.label, "Folder" if it.is_dir else "File", human_size(it.size)))
         self._label_to_path = {it.label: it.path for it in items}
         self._draw_pie(items)
 
     def _draw_pie(self, items: List[ItemSize]):
         self.ax.clear()
-        # Measure current canvas size for responsive layout
-        try:
-            # Force update to get actual current dimensions
-            self.canvas.get_tk_widget().update_idletasks()
-            _w = self.canvas.get_tk_widget().winfo_width()
-            _h = self.canvas.get_tk_widget().winfo_height()
-            # Ensure we have valid dimensions
-            if _w <= 1 or _h <= 1:
-                _w, _h = 800, 600
-        except Exception:
-            _w, _h = 800, 600
         
-        # Resize the figure to match the widget so the pie scales with window
-        try:
-            dpi = float(self.figure.get_dpi())
-            fig_w = max(1, _w) / dpi
-            fig_h = max(1, _h) / dpi
-            self.figure.set_size_inches(fig_w, fig_h, forward=True)
-        except Exception:
-            pass
-        
-        # Position axes to fill the figure and center the content
+        # 1. Expand the Axes to fill the entire Figure canvas (rect [0,0,1,1])
         try:
             self.ax.set_position([0.0, 0.0, 1.0, 1.0])
-            self.figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
         except Exception:
             pass
+
         if not items:
             self.ax.text(0.5, 0.5, "No items", ha="center", va="center")
             self.canvas.draw()
             return
+
         sizes = [max(0.0001, i.size) for i in items]
         labels = [i.label for i in items]
-        # Limit number of slices for readability: group small ones into "Other"
+
+        # Consolidate small slices
         MAX_SLICES = 12
         if len(sizes) > MAX_SLICES:
             pairs = list(zip(labels, sizes))
@@ -447,7 +388,8 @@ class App(tk.Tk):
             other = sum(s for _, s in tail)
             labels = [l for l, _ in head] + ["Other"]
             sizes = [s for _, s in head] + [other]
-        # Deterministic colors based on label hash
+
+        # Colors
         try:
             import matplotlib.cm as cm
             import numpy as np
@@ -455,11 +397,10 @@ class App(tk.Tk):
             colors = cm.tab20((hashes % 20) / 20.0)
         except Exception:
             colors = None
-        # Compute adaptive margin/radius based on widget aspect to avoid clipping
-        # Use near-full radius and center the pie; auto-stretch to fill height
-        r = 1.0
-        center_y = 0.0
-        
+
+        # 2. Draw Pie
+        # Use radius < 1.0 so anti-aliasing doesn't get clipped at the edge
+        r = 0.98
         wedges, texts = self.ax.pie(
             sizes,
             labels=None,
@@ -468,42 +409,33 @@ class App(tk.Tk):
             colors=colors,
             wedgeprops={"linewidth": 0.5, "edgecolor": "white"},
             radius=r,
-            center=(0, center_y),
+            center=(0, 0),
         )
-        # Debug prints removed
-        # Prevent any clipping so the pie renders fully
+
+        # Allow wedges to draw outside their bounding box if needed (prevents minor clipping)
         try:
             for w in wedges:
                 w.set_clip_on(False)
         except Exception:
             pass
         
-        # Maintain a true circle by expanding limits (datalim) to fill the rectangle
-        # 'equal' sets aspect to equal and adjustable to 'datalim' automatically
-        self.ax.axis('equal')
+        # 3. CRITICAL FIX for clipping/aspect ratio
+        # 'equal' aspect ratio ensures the pie is a circle.
+        # adjustable='datalim' ensures the circle stays round by changing the data limits
+        # instead of shrinking the axes box. This keeps the chart full-frame.
+        self.ax.set_aspect('equal', adjustable='datalim')
+        self.ax.autoscale(True)
         self.ax.set_axis_off()
-        # Force the axes to use the full figure area
-        self.ax.set_position([0, 0, 1, 1])
-        self.figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
-        
-        # Title intentionally removed
-        # Precompute total for tooltip percentages
-        total = float(sum(sizes)) if sizes else 1.0
-        # No padding: zero margins
-        try:
-            self.figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
-        except Exception:
-            pass
-        # Avoid tight_layout to prevent moving axes out of intended bounds
-        # Map wedges to items for hover selection
+
+        # Interaction setup
         self._wedge_map = {w: lbl for w, lbl in zip(wedges, labels)}
         self._items_by_label = {i.label: i for i in items}
-        # Inverse map for label -> wedge to support table hover highlighting
         self._label_to_wedge = {lbl: w for w, lbl in zip(wedges, labels)}
-        # Legend removed
-        # Hover: highlight slice and show name, but do not select the table row
+
+        # Tooltip
         if not hasattr(self, '_tooltip'):
             self._tooltip = tk.Label(self.canvas.get_tk_widget(), bg='lightyellow', fg='black', bd=1, relief='solid')
+
         def on_move(event):
             if event.inaxes != self.ax:
                 self._tooltip.place_forget()
@@ -513,45 +445,47 @@ class App(tk.Tk):
                 if w.contains_point((event.x, event.y)):
                     found = w
                     break
-            # If not found via pixel hit-test, try angle-based fallback for tiny wedges
+            
+            # Fallback for tiny wedges (angle based)
             if found is None and event.xdata is not None and event.ydata is not None:
                 try:
                     ang = math.degrees(math.atan2(event.ydata, event.xdata))
                     if ang < 0:
                         ang += 360.0
-                    # Determine slice percentage map
+                    
                     pct_map = {}
-                    for idx, w in enumerate(wedges):
+                    for w in wedges:
                         span = abs(getattr(w, 'theta2', 0) - getattr(w, 'theta1', 0))
                         pct_map[w] = (span / 360.0) * 100.0
-                    # Threshold to ignore very tiny slices unless the angle is within them
+                    
                     MIN_PCT = 0.5
                     for w in wedges:
                         t1 = getattr(w, 'theta1', 0)
                         t2 = getattr(w, 'theta2', 0)
-                        # Normalize order
                         lo, hi = (t1, t2) if t1 <= t2 else (t2, t1)
                         if lo <= ang <= hi and pct_map.get(w, 0) >= MIN_PCT:
                             found = w
                             break
                 except Exception:
                     pass
-            # reset alphas
+
+            # Highlight logic
             for w2 in wedges:
                 w2.set_alpha(1.0)
+            
             if found is not None:
                 found.set_alpha(0.6)
                 lbl = self._wedge_map.get(found)
                 if lbl:
                     it = self._items_by_label.get(lbl)
+                    total = float(sum(sizes)) if sizes else 1.0
                     pct = 0.0
                     try:
-                        # Use wedge size from sizes list
-                        idx = [i for i, L in enumerate([i.label for i in items]) if L == lbl]
-                        if idx:
-                            pct = (sizes[idx[0]] / total) * 100.0
-                    except Exception:
+                         val = sizes[labels.index(lbl)]
+                         pct = (val / total) * 100.0
+                    except: 
                         pass
+                    
                     tip = f"{lbl} — {human_size(it.size) if it else ''} ({pct:.1f}%)"
                     widget = self.canvas.get_tk_widget()
                     try:
@@ -564,25 +498,20 @@ class App(tk.Tk):
             else:
                 self._tooltip.place_forget()
             self.canvas.draw_idle()
-        # Disconnect prior hover handler to avoid duplicates
+
+        # Connect events
         try:
             if hasattr(self, '_mpl_cid_hover') and self._mpl_cid_hover:
                 self.canvas.mpl_disconnect(self._mpl_cid_hover)
         except Exception:
             pass
         self._mpl_cid_hover = self.canvas.mpl_connect('motion_notify_event', on_move)
-        # Legend removed
-        # Click to open file/folder from wedge
+
         def on_click(event):
-            # On pie click: highlight the slice and select the corresponding row
             if event.inaxes != self.ax:
                 return
             for w in wedges:
                 if w.contains_point((event.x, event.y)):
-                    # reset alphas
-                    for w2 in wedges:
-                        w2.set_alpha(1.0)
-                    w.set_alpha(0.6)
                     lbl = self._wedge_map.get(w)
                     it = self._items_by_label.get(lbl)
                     if it:
@@ -592,48 +521,18 @@ class App(tk.Tk):
                                 self.tree.selection_set(iid)
                                 self.tree.see(iid)
                                 break
-                    self.canvas.draw_idle()
                     break
-        # Disconnect prior click handler to avoid duplicates
+
         try:
             if hasattr(self, '_mpl_cid_click') and self._mpl_cid_click:
                 self.canvas.mpl_disconnect(self._mpl_cid_click)
         except Exception:
             pass
         self._mpl_cid_click = self.canvas.mpl_connect('button_press_event', on_click)
-        # Ensure the canvas is the topmost widget in the right panel
-        try:
-            self.canvas.get_tk_widget().tkraise()
-        except Exception:
-            pass
-        # Legend removed
+
         self.canvas.draw()
 
-        # Bind table hover to highlight corresponding pie wedge
-        def _on_tree_motion(event):
-            iid = self.tree.identify_row(event.y)
-            # Reset all wedge alphas
-            for w2 in self._label_to_wedge.values():
-                w2.set_alpha(1.0)
-            if iid:
-                vals = self.tree.item(iid, 'values')
-                if vals:
-                    lbl = vals[0]
-                    w = self._label_to_wedge.get(lbl)
-                    if w:
-                        w.set_alpha(0.6)
-                        self.canvas.draw_idle()
-                        return
-            self.canvas.draw_idle()
-        # Ensure only one binding exists (rebind safely)
-        try:
-            self.tree.unbind('<Motion>')
-        except Exception:
-            pass
-        self.tree.bind('<Motion>', _on_tree_motion)
-
     def _build_table_context_menu(self):
-        # Right-click menu for table items
         self._context_menu = tk.Menu(self, tearoff=0)
         self._context_menu.add_command(label="Open", command=self._ctx_open)
         self._context_menu.add_command(label="Show in Explorer", command=self._ctx_show_in_explorer)
@@ -648,6 +547,21 @@ class App(tk.Tk):
                 finally:
                     self._context_menu.grab_release()
         self.tree.bind('<Button-3>', _on_right_click)
+        
+        # Hover table row -> Highlight pie wedge
+        def _on_tree_motion(event):
+            iid = self.tree.identify_row(event.y)
+            for w2 in self._label_to_wedge.values():
+                w2.set_alpha(1.0)
+            if iid:
+                vals = self.tree.item(iid, 'values')
+                if vals:
+                    lbl = vals[0]
+                    w = self._label_to_wedge.get(lbl)
+                    if w:
+                        w.set_alpha(0.6)
+            self.canvas.draw_idle()
+        self.tree.bind('<Motion>', _on_tree_motion)
 
     def _get_selected_path(self) -> Optional[str]:
         sel = self.tree.selection()
@@ -662,7 +576,6 @@ class App(tk.Tk):
         return None
 
     def _ctx_open(self):
-        # Open the item itself: folders open in Explorer; files open with default app
         path = self._get_selected_path()
         if not path:
             return
@@ -686,10 +599,7 @@ class App(tk.Tk):
             import subprocess
             subprocess.Popen(['explorer', '/select,', os.path.normpath(path)])
         except Exception:
-            try:
-                os.startfile(os.path.dirname(path))
-            except Exception:
-                pass
+            pass
 
     def _ctx_copy_path(self):
         path = self._get_selected_path()
@@ -703,7 +613,6 @@ class App(tk.Tk):
             pass
 
     def update_apply_button(self):
-        # If threshold mode affects folder totals, rescan is required
         if self.threshold_mode.get():
             self.apply_btn.config(text="Apply & Rescan")
         else:
@@ -711,14 +620,19 @@ class App(tk.Tk):
 
     def on_apply_click(self):
         if self.threshold_mode.get():
-            # Threshold affects folder totals: rescan
             self.start_scan()
         else:
-            # Only re-filter cached items
             self.apply_filter_without_rescan()
+            
+    def apply_filter_without_rescan(self):
+        # Fallback if just filtering existing results
+        if not self._last_items:
+            return
+        min_s = self.parse_min_size()
+        filtered = [it for it in self._last_items if it.size >= min_s]
+        self._populate(filtered)
 
     def _on_show_in_explorer_selected(self, _event=None):
-        # Double-click: show in Explorer (select file or open folder)
         sel = self.tree.selection()
         if not sel:
             return
@@ -726,9 +640,7 @@ class App(tk.Tk):
         if not vals:
             return
         label = vals[0]
-        path = None
-        if hasattr(self, '_label_to_path'):
-            path = self._label_to_path.get(label)
+        path = self._label_to_path.get(label)
         if not path:
             return
         try:
@@ -738,47 +650,32 @@ class App(tk.Tk):
             else:
                 subprocess.Popen(['explorer', '/select,', os.path.normpath(path)])
         except Exception:
-            try:
-                os.startfile(os.path.dirname(path))
-            except Exception:
-                pass
+            pass
 
     def sort_tree(self, col: str):
-            # Toggle sort direction
-            asc = self._sort_dirs.get(col, True)
-            data = [(self.tree.set(k, col), k) for k in self.tree.get_children("")]
-            # For size, sort by numeric value from displayed text
-            if col == "size":
-                def _to_bytes(txt: str) -> float:
-                    # Parse human size; fallback to 0
-                    try:
-                        num, unit = txt.split(" ")
-                        val = float(num)
-                        mults = {"B":1, "KB":1024, "MB":1024**2, "GB":1024**3, "TB":1024**4}
-                        return val * mults.get(unit, 1)
-                    except Exception:
-                        return 0.0
-                data = [(_to_bytes(v), k) for v, k in data]
-            data.sort(reverse=not asc)
-            for idx, (_, k) in enumerate(data):
-                self.tree.move(k, "", idx)
-            # Update arrow on sorted column heading
-            arrow = "▲" if asc else "▼"
-            for c in ("name", "type", "size"):
-                title = self._col_titles[c]
-                if c == col:
-                    self.tree.heading(c, text=f"{title} {arrow}")
-                else:
-                    self.tree.heading(c, text=title)
-            self._sort_dirs[col] = not asc
-
-    def _on_sort(self, col: str):
-        App.sort_tree(self, col)
-
-    def redraw_legend(self):
-        # Redraw pie with updated legend when compact mode toggled
-        if hasattr(self, '_last_items') and self._last_items:
-            self._draw_pie(self._last_items)
+        asc = self._sort_dirs.get(col, True)
+        data = [(self.tree.set(k, col), k) for k in self.tree.get_children("")]
+        if col == "size":
+            def _to_bytes(txt: str) -> float:
+                try:
+                    num, unit = txt.split(" ")
+                    val = float(num)
+                    mults = {"B":1, "KB":1024, "MB":1024**2, "GB":1024**3, "TB":1024**4}
+                    return val * mults.get(unit, 1)
+                except Exception:
+                    return 0.0
+            data = [(_to_bytes(v), k) for v, k in data]
+        data.sort(reverse=not asc)
+        for idx, (_, k) in enumerate(data):
+            self.tree.move(k, "", idx)
+        arrow = "▲" if asc else "▼"
+        for c in ("name", "type", "size"):
+            title = self._col_titles[c]
+            if c == col:
+                self.tree.heading(c, text=f"{title} {arrow}")
+            else:
+                self.tree.heading(c, text=title)
+        self._sort_dirs[col] = not asc
 
     def export_csv(self):
         if not self._last_items:
@@ -798,14 +695,10 @@ class App(tk.Tk):
                     writer.writerow([it.label, it.path, "Folder" if it.is_dir else "File", it.size, human_size(it.size)])
             messagebox.showinfo("Export", f"Saved: {fp}")
             try:
-                # Open Explorer to the saved file location and select it
                 import subprocess
                 subprocess.Popen(["explorer", "/select,", fp])
             except Exception:
-                try:
-                    os.startfile(os.path.dirname(fp))
-                except Exception:
-                    pass
+                pass
         except Exception as e:
             messagebox.showerror("Export error", str(e))
 
