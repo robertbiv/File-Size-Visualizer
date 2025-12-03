@@ -357,6 +357,12 @@ class App(tk.Tk):
                 _w, _h = 800, 600
         except Exception:
             _w, _h = 800, 600
+        # Resize the figure to match the widget so the pie scales with window
+        try:
+            dpi = float(self.figure.get_dpi())
+            self.figure.set_size_inches(max(1, _w) / dpi, max(1, _h) / dpi, forward=True)
+        except Exception:
+            pass
         # No padding: fill entire figure
         try:
             self.ax.set_position([0, 0, 1, 1])
@@ -386,10 +392,7 @@ class App(tk.Tk):
             colors = cm.tab20((hashes % 20) / 20.0)
         except Exception:
             colors = None
-        # Calculate aspect ratio to use full available space
-        aspect = _w / max(_h, 1)
-        
-        # Use nearly full radius and adjust limits to match aspect ratio
+        # Use full radius
         r = 1.0
         
         wedges, texts = self.ax.pie(
@@ -403,25 +406,14 @@ class App(tk.Tk):
             center=(0, 0),
         )
         
-        # Set aspect to auto and adjust limits to fill the space
-        self.ax.set_aspect('equal', adjustable='datalim')
-        
-        # Calculate limits based on aspect ratio to maximize size
-        if aspect > 1:
-            # Wider than tall
-            xlim = aspect * 1.05
-            ylim = 1.05
-        else:
-            # Taller than wide
-            xlim = 1.05
-            ylim = 1.05 / aspect
-        
-        self.ax.set_xlim(-xlim, xlim)
-        self.ax.set_ylim(-ylim, ylim)
+        # Set aspect to equal and use tight limits
+        self.ax.set_aspect('equal')
+        self.ax.set_xlim(-1.05, 1.05)
+        self.ax.set_ylim(-1.05, 1.05)
         self.ax.set_axis_off()  # remove axes lines
         
-        # Set title centered at the top of the visible area
-        self.ax.set_title("Size distribution", fontsize=12, pad=10, y=0.98)
+        # Set title centered at the top
+        self.ax.set_title("Size distribution", fontsize=12, pad=10)
         # Precompute total for tooltip percentages
         total = float(sum(sizes)) if sizes else 1.0
         # No padding: zero margins
