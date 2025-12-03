@@ -217,23 +217,19 @@ class App(tk.Tk):
         # Chart
         right = ttk.Frame(main)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        # Larger figure for bigger pie; allow layout constraints
-        # Use manual layout adjustments for better control
-        self.figure = Figure(figsize=(7, 5.5), dpi=100, constrained_layout=False)
-        self.ax = self.figure.add_subplot(111)
-        self.ax.set_title("Size distribution")
+        # Use manual layout adjustments for better control; remove frame
+        self.figure = Figure(figsize=(7, 5.5), dpi=100, constrained_layout=False, frameon=False)
+        self.ax = self.figure.add_subplot(111, frame_on=False)
+        # Title will be set dynamically in _draw_pie to stay centered
         self.canvas = FigureCanvasTkAgg(self.figure, master=right)
         self.ax.set_axis_off()
+        self.ax.patch.set_visible(False)
+        self.figure.patch.set_visible(False)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         # Redraw pie on canvas resize to maximize usage of available space
         def _on_resize(_event):
             if hasattr(self, '_last_items') and self._last_items:
-                try:
-                    # Give some bottom margin for legend underneath the pie
-                    self.figure.subplots_adjust(bottom=0.22)
-                except Exception:
-                    pass
                 self._draw_pie(self._last_items)
         self.canvas.get_tk_widget().bind('<Configure>', _on_resize)
 
@@ -352,21 +348,18 @@ class App(tk.Tk):
         self.ax.clear()
         # Measure current canvas size for responsive layout
         try:
-            _w = max(1, self.canvas.get_tk_widget().winfo_width())
-            _h = max(1, self.canvas.get_tk_widget().winfo_height())
+            # Force update to get actual current dimensions
+            self.canvas.get_tk_widget().update_idletasks()
+            _w = self.canvas.get_tk_widget().winfo_width()
+            _h = self.canvas.get_tk_widget().winfo_height()
+            # Ensure we have valid dimensions
+            if _w <= 1 or _h <= 1:
+                _w, _h = 800, 600
         except Exception:
             _w, _h = 800, 600
-        # Explicit axes rectangle to ensure the pie stays on-page and centered
-        # [left, bottom, width, height] in figure coordinates
-        # Keep pie centered in upper portion, reserve bottom for legend
+        # No padding: fill entire figure
         try:
-            # Symmetric left/right margins, adapt for smaller widths
-            narrow = _w < 650
-            left = 0.06 if not narrow else 0.08
-            width = 0.88 if not narrow else 0.84
-            bottom = 0.24 if not narrow else 0.22
-            height = 0.70 if not narrow else 0.68
-            self.ax.set_position([left, bottom, width, height])
+            self.ax.set_position([0, 0, 1, 1])
         except Exception:
             pass
         if not items:
@@ -393,8 +386,12 @@ class App(tk.Tk):
             colors = cm.tab20((hashes % 20) / 20.0)
         except Exception:
             colors = None
-        # Reduce radius slightly so pie stays within view even with legend
-        r = 0.95 if _w > 900 else (0.92 if _w > 700 else 0.88)
+        # Calculate aspect ratio to use full available space
+        aspect = _w / max(_h, 1)
+        
+        # Use nearly full radius and adjust limits to match aspect ratio
+        r = 1.0
+        
         wedges, texts = self.ax.pie(
             sizes,
             labels=None,
@@ -405,25 +402,31 @@ class App(tk.Tk):
             radius=r,
             center=(0, 0),
         )
-        # If legend hidden, slightly offset the pie upward to use reclaimed space
-        if hasattr(self, 'hide_legend') and self.hide_legend.get():
-            try:
-                pos = self.ax.get_position().bounds  # (left, bottom, width, height)
-                # Move axes a bit lower bottom to center visually with more pie
-                self.ax.set_position([pos[0], pos[1]+0.02, pos[2], pos[3]])
-            except Exception:
-                pass
-        self.ax.set_aspect('equal')
-        # Keep pie centered and always visible even in narrow mode
-        lim = 1.1 if _w >= 700 else 1.0
-        self.ax.set_xlim(-lim, lim)
-        self.ax.set_ylim(-lim, lim)
+        
+        # Set aspect to auto and adjust limits to fill the space
+        self.ax.set_aspect('equal', adjustable='datalim')
+        
+        # Calculate limits based on aspect ratio to maximize size
+        if aspect > 1:
+            # Wider than tall
+            xlim = aspect * 1.05
+            ylim = 1.05
+        else:
+            # Taller than wide
+            xlim = 1.05
+            ylim = 1.05 / aspect
+        
+        self.ax.set_xlim(-xlim, xlim)
+        self.ax.set_ylim(-ylim, ylim)
         self.ax.set_axis_off()  # remove axes lines
+        
+        # Set title centered at the top of the visible area
+        self.ax.set_title("Size distribution", fontsize=12, pad=10, y=0.98)
         # Precompute total for tooltip percentages
         total = float(sum(sizes)) if sizes else 1.0
-        # No legend: expand figure area margins
+        # No padding: zero margins
         try:
-            self.figure.subplots_adjust(left=0.02, right=0.98, top=0.98, bottom=0.02)
+            self.figure.subplots_adjust(left=0, right=1, top=1, bottom=0)
         except Exception:
             pass
         # Avoid tight_layout to prevent moving axes out of intended bounds
