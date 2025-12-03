@@ -419,6 +419,8 @@ class App(tk.Tk):
         self.ax.set_xlim(-lim, lim)
         self.ax.set_ylim(-lim, lim)
         self.ax.set_axis_off()  # remove axes lines
+        # Precompute total for tooltip percentages
+        total = float(sum(sizes)) if sizes else 1.0
         # No legend: expand figure area margins
         try:
             self.figure.subplots_adjust(left=0.02, right=0.98, top=0.98, bottom=0.02)
@@ -450,7 +452,16 @@ class App(tk.Tk):
                 found.set_alpha(0.6)
                 lbl = self._wedge_map.get(found)
                 if lbl:
-                    tip = lbl
+                    it = self._items_by_label.get(lbl)
+                    pct = 0.0
+                    try:
+                        # Use wedge size from sizes list
+                        idx = [i for i, L in enumerate([i.label for i in items]) if L == lbl]
+                        if idx:
+                            pct = (sizes[idx[0]] / total) * 100.0
+                    except Exception:
+                        pass
+                    tip = f"{lbl} — {human_size(it.size) if it else ''} ({pct:.1f}%)"
                     widget = self.canvas.get_tk_widget()
                     try:
                         x = int(widget.winfo_pointerx() - widget.winfo_rootx() + 12)
