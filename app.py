@@ -217,7 +217,8 @@ class App(tk.Tk):
         # Chart
         right = ttk.Frame(main)
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.figure = Figure(figsize=(5, 4), dpi=100)
+        # Larger figure for bigger pie
+        self.figure = Figure(figsize=(7, 5.5), dpi=100)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_title("Size distribution")
         self.canvas = FigureCanvasTkAgg(self.figure, master=right)
@@ -377,23 +378,56 @@ class App(tk.Tk):
         def _short(name: str, max_len: int = 28) -> str:
             return (name if len(name) <= max_len else (name[:max_len-1] + "…"))
         legend_labels = [f"{_short(lbl)} — {human_size(sz)} ({(sz/total*100):.1f}%)" for lbl, sz in zip(labels, sizes)]
-        # Legend on the right; smaller font to avoid overflow
+        # Legend below the pie for better readability; dynamic columns
+        ncols = 2 if len(legend_labels) <= 10 else 3
         self.ax.legend(
             wedges,
             legend_labels,
-            loc="center left",
-            bbox_to_anchor=(1.0, 0.5),
+            loc="lower center",
+            bbox_to_anchor=(0.5, -0.15),
             frameon=False,
             borderaxespad=0.0,
             labelspacing=0.4,
-            prop={"size": 8},
+            prop={"size": 9},
+            ncol=ncols,
             handlelength=1.0,
         )
+        self.figure.tight_layout()
         # Map wedges to items for hover selection
         self._wedge_map = {w: lbl for w, lbl in zip(wedges, labels)}
         self._items_by_label = {i.label: i for i in items}
-        # Disable hover highlight: we only highlight on click
-        # (previous hover handler removed per request)
+        # Hover: highlight slice and show name, but do not select the table row
+        if not hasattr(self, '_tooltip'):
+            self._tooltip = tk.Label(self.canvas.get_tk_widget(), bg='lightyellow', fg='black', bd=1, relief='solid')
+        def on_move(event):
+            if event.inaxes != self.ax:
+                self._tooltip.place_forget()
+                return
+            found = None
+            for w in wedges:
+                if w.contains_point((event.x, event.y)):
+                    found = w
+                    break
+            # reset alphas
+            for w2 in wedges:
+                w2.set_alpha(1.0)
+            if found is not None:
+                found.set_alpha(0.6)
+                lbl = self._wedge_map.get(found)
+                if lbl:
+                    tip = lbl
+                    widget = self.canvas.get_tk_widget()
+                    try:
+                        x = int(widget.winfo_pointerx() - widget.winfo_rootx() + 12)
+                        y = int(widget.winfo_pointery() - widget.winfo_rooty() + 12)
+                        self._tooltip.config(text=tip)
+                        self._tooltip.place(x=x, y=y)
+                    except Exception:
+                        pass
+            else:
+                self._tooltip.place_forget()
+            self.canvas.draw_idle()
+        self._mpl_cid_hover = self.canvas.mpl_connect('motion_notify_event', on_move)
         # Click to open file/folder from wedge
         def on_click(event):
             # On pie click: highlight the slice and select the corresponding row
