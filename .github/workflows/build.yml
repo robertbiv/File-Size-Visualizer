@@ -27,6 +27,12 @@ jobs:
       run: |
         pyinstaller --onefile --windowed --name "FileSizeFilter" app.py
 
+    - name: Upload Build Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: FileSizeFilter
+        path: dist/FileSizeFilter.exe
+
     - name: Upload Release Asset
       uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/')
