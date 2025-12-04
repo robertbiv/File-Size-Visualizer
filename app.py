@@ -434,12 +434,15 @@ class App(tk.Tk):
         if not sel: return
         path = self._iid_to_path.get(sel[0])
         if path:
-            try: os.startfile(os.path.normpath(path))
+            try:
+                import subprocess
+                subprocess.run(['explorer', '/select,', os.path.normpath(path)])
             except: pass
 
     def _build_context_menu(self):
         m = tk.Menu(self, tearoff=0)
         m.add_command(label="Open", command=self._ctx_open)
+        m.add_command(label="Open in File Explorer", command=self._ctx_open_explorer)
         m.add_command(label="Copy Path", command=self._ctx_copy)
         self._ctx_menu = m
         self.tree.bind('<Button-3>', self._show_ctx)
@@ -456,6 +459,16 @@ class App(tk.Tk):
             path = self._iid_to_path.get(sel[0])
             if path:
                 try: os.startfile(path)
+                except: pass
+
+    def _ctx_open_explorer(self):
+        sel = self.tree.selection()
+        if sel:
+            path = self._iid_to_path.get(sel[0])
+            if path:
+                try:
+                    import subprocess
+                    subprocess.run(['explorer', '/select,', os.path.normpath(path)])
                 except: pass
 
     def _ctx_copy(self):
