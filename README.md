@@ -1,4 +1,4 @@
-# File Size Filter
+# File Size Visualizer
 
 A simple Windows desktop app to select a folder and visualize the size distribution of files and subfolders using a pie chart. Includes filtering by minimum file size and optionally applies to subfolders.
 
