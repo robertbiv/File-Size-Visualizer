@@ -136,6 +136,10 @@ class App(tk.Tk):
         self._root_items: List[ItemSize] = [] 
         self._iid_to_path: Dict[str, str] = {}
         self._loaded_iids = set()
+        self._pie_stack = []  # Stack to track pie chart states when drilling down
+        self._current_pie_items = []
+        self._pie_stack = []  # Stack to track pie chart states when drilling down
+        self._current_pie_items = []
         
         # --- FONT SETUP ---
         self.default_font_name = "Segoe UI"
@@ -217,6 +221,9 @@ class App(tk.Tk):
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         self.tree.bind('<<TreeviewOpen>>', self.on_tree_open)
+        self.tree.bind('<<TreeviewOpen>>', self.on_tree_open)
+        self.tree.bind('<<TreeviewOpen>>', self.on_tree_open)
+        self.tree.bind('<<TreeviewClose>>', self.on_tree_close)
         self.tree.bind('<Double-1>', self._on_double_click)
         self.tree.bind('<Motion>', self._on_tree_hover)
         self._build_context_menu()
@@ -301,18 +308,93 @@ class App(tk.Tk):
         sel = self.tree.selection()
         if not sel: return
         iid = sel[0]
-        if iid in self._loaded_iids: return
-
+        
+        # Close all other open folders at the same level to avoid confusion
+        parent = self.tree.parent(iid)
+        siblings = self.tree.get_children(parent)
+        for sibling in siblings:
+            if sibling != iid:
+                # Check if this sibling is open
+                if self.tree.item(sibling, 'open'):
+                    self.tree.item(sibling, open=False)
+        
+        # Check if this is a folder being expanded
         children = self.tree.get_children(iid)
         if len(children) == 1 and self.tree.item(children[0], "text") == "dummy":
-            self.tree.delete(children[0])
-            path = self._iid_to_path.get(iid)
-            if path:
-                self.status_var.set(f"Expanding: {os.path.basename(path)}...")
-                t = threading.Thread(target=self._scan_thread_func, 
-                                     args=(path, iid, False), daemon=True)
-                t.start()
-                self.after(100, self._poll_queue)
+            # Need to load children first
+            if iid not in self._loaded_iids:
+                self.tree.delete(children[0])
+                path = self._iid_to_path.get(iid)
+                if path:
+                    self.status_var.set(f"Expanding: {os.path.basename(path)}...")
+                    t = threading.Thread(target=self._scan_thread_func, 
+                                         args=(path, iid, False), daemon=True)
+                    t.start()
+                    self.after(100, self._poll_queue)
+        else:
+            # Children already loaded, redraw pie for this folder
+            self._redraw_pie_for_folder(iid)
+
+    def on_tree_close(self, event):
+        """Restore previous pie chart when folder is collapsed"""
+        if self._pie_stack:
+            # Pop the current state
+            self._pie_stack.pop()
+            if self._pie_stack:
+                # Restore the previous level
+                previous_items = self._pie_stack[-1]
+                self._current_pie_items = previous_items
+                self._draw_pie(previous_items)
+            else:
+                # Back to root level
+                self._current_pie_items = self._root_items
+                self._draw_pie(self._root_items)
+
+    def _redraw_pie_for_folder(self, iid):
+        """Redraw pie chart showing only the contents of the expanded folder"""
+        # Get all children of this folder
+        children = self.tree.get_children(iid)
+        if not children:
+            return
+        
+        # Build ItemSize list from children
+        folder_items = []
+        for child_iid in children:
+            name = self.tree.item(child_iid, "text")
+            values = self.tree.item(child_iid, "values")
+            if values:
+                type_str = values[0]
+                size_str = values[1]
+                path = self._iid_to_path.get(child_iid, "")
+                
+                # Parse size back from human readable format
+                try:
+                    size = self._parse_human_size(size_str)
+                    is_dir = (type_str == "Folder")
+                    folder_items.append(ItemSize(label=name, path=path, size=size, is_dir=is_dir))
+                except:
+                    pass
+        
+        if folder_items:
+            # Save current state before drilling down
+            current = self._current_pie_items if self._current_pie_items else self._root_items
+            self._pie_stack.append(current)
+            self._current_pie_items = folder_items
+            self._draw_pie(folder_items)
+
+    def _parse_human_size(self, size_str: str) -> int:
+        """Parse human-readable size back to bytes"""
+        try:
+            parts = size_str.split()
+            if len(parts) == 2:
+                num = float(parts[0])
+                unit = parts[1]
+                multipliers = {"B": 1, "KB": 1024, "KiB": 1024, "MB": 1024**2, "MiB": 1024**2, 
+                              "GB": 1024**3, "GiB": 1024**3, "TB": 1024**4, "TiB": 1024**4}
+                return int(num * multipliers.get(unit, 1))
+        except:
+            pass
+        return 0
 
     def _scan_thread_func(self, folder, parent_iid, is_root):
         try:
@@ -348,11 +430,14 @@ class App(tk.Tk):
                     
                     if is_root:
                         self._root_items = items
+                        self._current_pie_items = items
                         self._draw_pie(items)
                         self.status_var.set(f"Done. Found {len(items)} items.")
                         self._stop_prog()
                     else:
                         self._loaded_iids.add(parent_iid)
+                        # After loading folder children, redraw pie for that folder
+                        self._redraw_pie_for_folder(parent_iid)
                         self.status_var.set("Ready.")
         except queue.Empty:
             pass
