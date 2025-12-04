@@ -125,7 +125,7 @@ class App(tk.Tk):
         try: self.tk.call('tk', 'scaling', self._system_dpi / 72.0)
         except: pass
             
-        self.title("File Size Filter - Adjustable Font")
+        self.title("File Size Visualizer - gh: robertbiv")
         self.geometry("1100x700")
 
         self.selected_folder: Optional[str] = None
@@ -184,12 +184,12 @@ class App(tk.Tk):
 
         # Progress
         self.prog_frame = ttk.Frame(self)
-        self.prog_frame.pack(fill=tk.X, padx=10)
         self.progress = ttk.Progressbar(self.prog_frame, mode="indeterminate")
         self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.cancel_btn = ttk.Button(self.prog_frame, text="Cancel", command=self.cancel_scan, state=tk.DISABLED)
+        self.cancel_btn = ttk.Button(self.prog_frame, text="Cancel", command=self.cancel_scan)
         self.cancel_btn.pack(side=tk.LEFT, padx=6)
-        self.prog_frame.pack_forget()
+        # Initially hidden, will show during scan
+        # Don't pack it yet - will be shown when scanning starts
 
         # --- MAIN PANE ---
         main = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
@@ -288,9 +288,8 @@ class App(tk.Tk):
         self.canvas.draw()
         
         self.status_var.set("Scanning root level...")
-        self.prog_frame.pack(fill=tk.X, padx=10)
+        self.prog_frame.pack(fill=tk.X, padx=10, before=self._paned)
         self.progress.start(10)
-        self.cancel_btn.config(state=tk.NORMAL)
         self._cancel_flag = False
         
         self.scan_thread = threading.Thread(target=self._scan_thread_func, 
@@ -417,15 +416,60 @@ class App(tk.Tk):
         self._wedge_map = dict(zip(wedges, labels))
         self._lbl_to_wedge = dict(zip(labels, wedges))
         
+        # Add hover handler for pie chart
+        if hasattr(self, '_pie_hover_cid'):
+            self.canvas.mpl_disconnect(self._pie_hover_cid)
+        self._pie_hover_cid = self.canvas.mpl_connect('motion_notify_event', self._on_pie_hover)
+        
         self.canvas.draw()
+
+    def _on_pie_hover(self, event):
+        """Highlight tree row when hovering over pie wedge"""
+        if not hasattr(self, '_wedge_map') or event.inaxes != self.ax:
+            return
+        
+        # Find which wedge is under the mouse
+        hovered_label = None
+        for wedge, label in self._wedge_map.items():
+            if wedge.contains_point([event.x, event.y]):
+                hovered_label = label
+                break
+        
+        # Highlight the corresponding tree row
+        if hovered_label:
+            # Find the tree item with this label
+            for iid in self.tree.get_children():
+                if self.tree.item(iid, "text") == hovered_label:
+                    self.tree.selection_set(iid)
+                    self.tree.see(iid)
+                    break
+        else:
+            # Clear selection when not hovering over any wedge
+            self.tree.selection_remove(self.tree.selection())
 
     def _on_tree_hover(self, event):
         iid = self.tree.identify_row(event.y)
         if hasattr(self, '_lbl_to_wedge'):
             for w in self._lbl_to_wedge.values(): w.set_alpha(1.0)
             if iid:
+                # Get the item text (could be nested in a folder)
                 txt = self.tree.item(iid, "text")
+                
+                # First try direct match
                 w = self._lbl_to_wedge.get(txt)
+                
+                # If no direct match, check if this item is under a root folder
+                if not w:
+                    # Walk up the tree to find the root parent
+                    parent = self.tree.parent(iid)
+                    while parent:
+                        next_parent = self.tree.parent(parent)
+                        if not next_parent:  # This is a root item
+                            parent_txt = self.tree.item(parent, "text")
+                            w = self._lbl_to_wedge.get(parent_txt)
+                            break
+                        parent = next_parent
+                
                 if w: w.set_alpha(0.6)
             self.canvas.draw_idle()
 
